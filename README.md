@@ -67,6 +67,30 @@ export ANDROID_HOME=/path/to/android-sdk
 
 注意：AGP 9.0 起内置 Kotlin 支持，**不要**再声明 `org.jetbrains.kotlin.android` 插件（会报 `no longer required for Kotlin support since AGP 9.0`）；Compose 只需 `org.jetbrains.kotlin.plugin.compose`。
 
+## 自动构建与发布
+
+`.github/workflows/release.yml` 负责在 CI 上编译 APK 并发布到 GitHub Release。
+
+**触发方式**
+
+- 推送 `v*` 形式的 tag（例如 `v1.0.0`）自动触发；
+- 或在 Actions 页面手动 `Run workflow`，填写要发布的 tag。
+
+**发布前需配置签名 secrets**（Settings → Secrets and variables → Actions）：
+
+| Secret | 内容 |
+| --- | --- |
+| `KEYSTORE_BASE64` | `base64 -w0 release.keystore` 的输出 |
+| `KEYSTORE_PASSWORD` | keystore 口令 |
+| `KEY_ALIAS` | key alias |
+| `KEY_PASSWORD` | key 口令 |
+
+四个 secret 缺任意一个，工作流会**直接失败并拒绝发布**——因为 `app/build.gradle.kts` 的 release 未配置 `signingConfig`，`assembleRelease` 只会产出 `app-release-unsigned.apk`，而未签名 APK 无法安装。
+
+若只是想验证构建产物，可手动触发并勾选 `allow_unsigned`，此时会发布一个文件名带 `-unsigned` 后缀的未签名包。
+
+发布流程：`zipalign -p 4` → `apksigner sign` → `apksigner verify --print-certs` → 上传 workflow artifact → 创建 Release 并附上 `AppListUploadBlocker-<tag>.apk`。
+
 ## 安装与使用
 
 1. 安装 APK，在 LSPosed 中启用模块。

@@ -1,0 +1,175 @@
+name: Build APK & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的 tag（例如 v1.0.0）'
+        required: true
+        type: string
+      allow_unsigned:
+        description: '未配置签名密钥时仍发布未签名 APK（仅供调试，正常安装请勿勾选）'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+# 同一 tag 重复触发时串行执行，避免并发写同一个 Release
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # 与 app/build.gradle.kts 中的 compileSdk(+compileSdkMinor) / buildToolsVersion 保持一致。
+  # AGP 9 起平台包名带 minor 号：compileSdk=37 + compileSdkMinor=0 -> platforms;android-37.0
+  COMPILE_SDK: '37.0'
+  BUILD_TOOLS: '37.0.0'
+  APK_BASENAME: AppListUploadBlocker
+
+jobs:
+  build:
+    name: Build & Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up JDK 25
+        uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: '25'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Install SDK components
+        run: |
+          set -euo pipefail
+          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+          sdkmanager --install "platforms;android-${COMPILE_SDK}" "build-tools;${BUILD_TOOLS}"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v6
+
+      - name: Build release APK
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Resolve release metadata
+        id: meta
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KS_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          ALLOW_UNSIGNED: ${{ github.event.inputs.allow_unsigned }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            TAG="${INPUT_TAG}"
+          else
+            TAG="${GITHUB_REF_NAME}"
+          fi
+          if [ -z "${TAG}" ]; then
+            echo "::error::无法确定发布 tag"
+            exit 1
+          fi
+          # 文件名安全化：tag 里的 / 等字符不能出现在 artifact 名与资产名中
+          SAFE_TAG="$(printf '%s' "${TAG}" | tr '/\\:*?"<>| ' '-')"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "safe_tag=${SAFE_TAG}" >> "$GITHUB_OUTPUT"
+
+          if [ -n "${KEYSTORE_B64}" ] && [ -n "${KS_PASSWORD}" ] && [ -n "${KEY_ALIAS}" ] && [ -n "${KEY_PASSWORD}" ]; then
+            echo "has_keystore=true" >> "$GITHUB_OUTPUT"
+            echo "签名密钥完整，将使用 Release 密钥签名"
+          else
+            echo "has_keystore=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::签名 secrets 不完整（需要 KEYSTORE_BASE64 / KEYSTORE_PASSWORD / KEY_ALIAS / KEY_PASSWORD 四个），产物将未签名"
+          fi
+          echo "allow_unsigned=${ALLOW_UNSIGNED}" >> "$GITHUB_OUTPUT"
+          echo "Resolved tag: ${TAG} (safe: ${SAFE_TAG})"
+
+      - name: Guard - 未配置签名密钥
+        if: steps.meta.outputs.has_keystore != 'true' && steps.meta.outputs.allow_unsigned != 'true'
+        run: |
+          set -euo pipefail
+          echo "::error::未配置完整的签名 secrets，拒绝发布无法安装的未签名 APK。"
+          echo "请在仓库 Settings → Secrets and variables → Actions 中添加："
+          echo "  KEYSTORE_BASE64      = base64 -w0 release.keystore"
+          echo "  KEYSTORE_PASSWORD    = keystore 口令"
+          echo "  KEY_ALIAS            = key alias"
+          echo "  KEY_PASSWORD         = key 口令"
+          echo "若只是验证构建产物，可手动触发本 workflow 并勾选 allow_unsigned。"
+          exit 1
+
+      - name: Sign APK
+        if: steps.meta.outputs.has_keystore == 'true'
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          SAFE_TAG: ${{ steps.meta.outputs.safe_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          RAW_APK="$(ls app/build/outputs/apk/release/*.apk | head -n 1)"
+          OUT_APK="dist/${APK_BASENAME}-${SAFE_TAG}.apk"
+          BT_DIR="${ANDROID_SDK_ROOT}/build-tools/${BUILD_TOOLS}"
+
+          printf '%s' "${KEYSTORE_B64}" | base64 -d > "${RUNNER_TEMP}/release.keystore"
+
+          "${BT_DIR}/zipalign" -f -p 4 "${RAW_APK}" "${RUNNER_TEMP}/aligned.apk"
+          "${BT_DIR}/apksigner" sign \
+            --ks "${RUNNER_TEMP}/release.keystore" \
+            --ks-key-alias "${KEY_ALIAS}" \
+            --ks-pass "pass:${KEYSTORE_PASSWORD}" \
+            --key-pass "pass:${KEY_PASSWORD}" \
+            --out "${OUT_APK}" \
+            "${RUNNER_TEMP}/aligned.apk"
+
+          "${BT_DIR}/apksigner" verify --print-certs "${OUT_APK}"
+          rm -f "${RUNNER_TEMP}/release.keystore" "${RUNNER_TEMP}/aligned.apk"
+          echo "Signed APK: ${OUT_APK}"
+
+      - name: Collect unsigned APK
+        if: steps.meta.outputs.has_keystore != 'true' && steps.meta.outputs.allow_unsigned == 'true'
+        env:
+          SAFE_TAG: ${{ steps.meta.outputs.safe_tag }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          RAW_APK="$(ls app/build/outputs/apk/release/*.apk | head -n 1)"
+          OUT_APK="dist/${APK_BASENAME}-${SAFE_TAG}-unsigned.apk"
+          cp "${RAW_APK}" "${OUT_APK}"
+          echo "Unsigned APK: ${OUT_APK}"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: apk-${{ steps.meta.outputs.safe_tag }}
+          path: dist/*.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: ${{ steps.meta.outputs.tag }}
+          target_commitish: ${{ github.sha }}
+          files: dist/*.apk
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          draft: false
+          prerelease: false
