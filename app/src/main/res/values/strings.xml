@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">应用列表上传拦截</string>
+    <string name="xposed_description">阻止「系统安全组件」上传已安装应用列表</string>
+    <string name="module_description">拦截 com.miui.guardprovider 向 https://flash.sec.miui.com/detect/app 上报已安装应用列表（包名、版本号、签名 MD5、应用名）。</string>
+
+    <string name="activation_active">已激活</string>
+    <string name="activation_inactive">未激活</string>
+    <string name="activation_version">模块版本：%1$s</string>
+    <string name="activation_hint_enable">请在 LSPosed 中启用本模块</string>
+    <string name="activation_hint_scope">请在 LSPosed 中勾选作用域 %1$s</string>
+
+    <string name="section_status">运行状态</string>
+    <string name="section_about">关于</string>
+    <string name="status_channel">配置通道</string>
+    <string name="status_channel_ok">已连接 LSPosed</string>
+    <string name="status_channel_missing">未连接（请确认模块已在 LSPosed 中启用）</string>
+    <string name="status_framework">Xposed 框架</string>
+    <string name="status_framework_unknown">未知</string>
+    <string name="status_scope">作用域</string>
+    <string name="status_scope_missing">未勾选 %1$s</string>
+    <string name="about_version">版本</string>
+    <string name="about_build_time">构建时间</string>
+    <string name="about_detail">拦截目标</string>
+    <string name="about_license">本模块以 AGPL-3.0 许可发布，仅供学习与研究使用。</string>
+</resources>
