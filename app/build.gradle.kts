@@ -18,8 +18,8 @@ android {
         applicationId = "io.github.niguangowo.applistblocker"
         minSdk = 35
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
 
         val buildTime = SimpleDateFormat("yyyy-MM-dd HH:mm:ss").apply {
             timeZone = TimeZone.getTimeZone("Asia/Shanghai")
@@ -52,11 +52,21 @@ android {
         jniLibs {
             useLegacyPackaging = false
         }
+        dex {
+            useLegacyPackaging = true
+        }
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // 关闭 R8 会让 Compose / Miuix 全家桶原样打进 APK（实测 20.95 MB）。
+            // 开启后配合 app/proguard-rules.pro 的 keep 规则，实测 1.76 MB。
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
     }
 
