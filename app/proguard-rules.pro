@@ -28,7 +28,22 @@
 -dontwarn io.github.libxposed.**
 
 # ---------------------------------------------------------------------------
-# 2. DexKit
+# 2. ContentProvider
+# ---------------------------------------------------------------------------
+# BlockRecordProvider is instantiated by the framework from the manifest when the
+# Hook side calls it to deliver a block record, so its name and call must survive.
+-keep class io.github.niguangowo.applistblocker.BlockRecordProvider { *; }
+-keepnames class io.github.niguangowo.applistblocker.BlockRecordProvider
+
+# BlockRecordStore / ServiceBridge are intentionally NOT kept: they are only ever
+# reached by direct static references (no reflection, no manifest entry), so R8 may
+# inline and rename them freely. Keeping them would only bloat the APK.
+#
+# SettingsActivity is kept by the aapt-generated rule for the manifest-declared
+# activity; no extra rule is needed here.
+
+# ---------------------------------------------------------------------------
+# 3. DexKit
 # ---------------------------------------------------------------------------
 # DexKit bridges Java <-> a native library (libdexkit.so) over JNI and builds
 # its query DSL reflectively. Renaming any of it breaks anchor matching at
@@ -39,7 +54,7 @@
 -dontwarn org.luckypray.dexkit.**
 
 # ---------------------------------------------------------------------------
-# 3. Attributes the framework and Compose runtime rely on
+# 4. Attributes the framework and Compose runtime rely on
 # ---------------------------------------------------------------------------
 -keepattributes Signature
 -keepattributes *Annotation*
@@ -48,7 +63,7 @@
 -keepattributes SourceFile,LineNumberTable
 
 # ---------------------------------------------------------------------------
-# 4. Compose / Kotlin metadata
+# 5. Compose / Kotlin metadata
 # ---------------------------------------------------------------------------
 # Compose ships its own consumer rules; these are belt-and-braces for the
 # @Composable reflection surface and Kotlin metadata lookups.

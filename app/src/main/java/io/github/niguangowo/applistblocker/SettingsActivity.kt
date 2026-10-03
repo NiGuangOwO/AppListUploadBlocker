@@ -1,5 +1,6 @@
 package io.github.niguangowo.applistblocker
 
+import android.content.SharedPreferences
 import android.os.Bundle
 import android.util.Log
 import androidx.activity.ComponentActivity
@@ -34,8 +35,9 @@ import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import io.github.libxposed.service.XposedService
-import io.github.libxposed.service.XposedServiceHelper
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import top.yukonga.miuix.kmp.basic.BasicComponent
 import top.yukonga.miuix.kmp.basic.Card
 import top.yukonga.miuix.kmp.basic.CardDefaults
@@ -44,20 +46,40 @@ import top.yukonga.miuix.kmp.basic.MiuixScrollBehavior
 import top.yukonga.miuix.kmp.basic.Scaffold
 import top.yukonga.miuix.kmp.basic.SmallTitle
 import top.yukonga.miuix.kmp.basic.Text
+import top.yukonga.miuix.kmp.basic.TextButton
 import top.yukonga.miuix.kmp.basic.TopAppBar
 import top.yukonga.miuix.kmp.theme.ColorSchemeMode
 import top.yukonga.miuix.kmp.theme.MiuixTheme
 import top.yukonga.miuix.kmp.theme.ThemeController
 
-class SettingsActivity : ComponentActivity(), XposedServiceHelper.OnServiceListener {
+class SettingsActivity : ComponentActivity() {
 
     private var status by mutableStateOf(ModuleStatus.DISCONNECTED)
+
+    private var records by mutableStateOf(RecordSnapshot.UNAVAILABLE)
+
+    private var preferences: SharedPreferences? = null
+
+    /**
+     * 记录文件变化时刷新界面；Hook 侧写入后本进程会收到回调。
+     * 回调发生在提交 `commit()` 的那个线程（Provider 的 Binder 线程或清空记录的后台线程），
+     * 因此必须切回主线程再写 Compose 状态。
+     */
+    private val recordsListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, _ -> runOnUiThread { refreshRecords() } }
+
+    /**
+     * 框架连接状态的观察者。保存为字段而不是每次用 `::applyServiceState`，
+     * 因为 [ServiceBridge.clearObserver] 按引用比对，方法引用每次求值可能是新对象。
+     */
+    private val serviceObserver: () -> Unit = { applyServiceState() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        XposedServiceHelper.registerListener(this)
+        preferences = BlockRecordStore.preferences(this)
+        refreshRecords()
 
         setContent {
             MiuixTheme(
@@ -65,33 +87,98 @@ class SettingsActivity : ComponentActivity(), XposedServiceHelper.OnServiceListe
                     ThemeController(colorSchemeMode = ColorSchemeMode.System)
                 }
             ) {
-                SettingsScreen(status = status)
+                SettingsScreen(
+                    status = status,
+                    records = records,
+                    onClearRecords = ::clearRecords,
+                )
             }
         }
     }
 
-    override fun onServiceBind(service: XposedService) {
-        status = try {
-            ModuleStatus(
-                bound = true,
-                frameworkName = service.frameworkName,
-                frameworkVersion = service.frameworkVersion,
-                frameworkVersionCode = service.frameworkVersionCode,
-                apiVersion = service.apiVersion,
-                scope = runCatching { service.scope.toList() }.getOrDefault(emptyList()),
-            )
-        } catch (t: Throwable) {
-            Log.e(TAG, "Failed to query Xposed service", t)
+    override fun onStart() {
+        super.onStart()
+        // 记录只由本进程写入，注册监听即可拿到实时更新，无需轮询。
+        preferences?.registerOnSharedPreferenceChangeListener(recordsListener)
+        refreshRecords()
+
+        // 框架 service 由进程级单例统一持有：本类只观察，不直接注册，
+        // 避免静态 listener 强引用已销毁的 Activity。
+        ServiceBridge.start()
+        ServiceBridge.observe(serviceObserver)
+    }
+
+    override fun onStop() {
+        preferences?.unregisterOnSharedPreferenceChangeListener(recordsListener)
+        ServiceBridge.clearObserver(serviceObserver)
+        super.onStop()
+    }
+
+    /** 用 [ServiceBridge] 的最新状态刷新界面；回调已保证在主线程。 */
+    private fun applyServiceState() {
+        val service = ServiceBridge.service
+        status = if (service == null) {
             ModuleStatus.DISCONNECTED
+        } else {
+            try {
+                ModuleStatus(
+                    bound = true,
+                    frameworkName = service.frameworkName,
+                    frameworkVersion = service.frameworkVersion,
+                    frameworkVersionCode = service.frameworkVersionCode,
+                    apiVersion = service.apiVersion,
+                    scope = runCatching { service.scope.toList() }.getOrDefault(emptyList()),
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to query Xposed service", t)
+                ModuleStatus.DISCONNECTED
+            }
         }
     }
 
-    override fun onServiceDied(service: XposedService) {
-        status = ModuleStatus.DISCONNECTED
+    /** 从本进程私有的记录文件重新读取快照。 */
+    private fun refreshRecords() {
+        val store = preferences ?: run {
+            records = RecordSnapshot.UNAVAILABLE
+            return
+        }
+        records = runCatching {
+            RecordSnapshot(
+                available = true,
+                total = BlockRecordStore.total(store),
+                entries = BlockRecordStore.recent(store),
+            )
+        }.getOrElse { t ->
+            Log.e(TAG, "Failed to read block records", t)
+            RecordSnapshot.UNAVAILABLE
+        }
+    }
+
+    private fun clearRecords() {
+        val store = preferences ?: return
+        // clear() 内部是同步 commit()，放到后台线程避免在主线程上写盘。
+        Thread {
+            BlockRecordStore.clear(store)
+            runOnUiThread { refreshRecords() }
+        }.start()
     }
 
     private companion object {
         const val TAG = "AppListBlocker"
+    }
+}
+
+/**
+ * 设置界面持有的记录快照。[available] 为 false 表示本进程的本地记录存储读取失败，
+ * 此时界面只提示不可用，不展示计数与明细。记录与框架连接无关：它由模块进程自己写入。
+ */
+private data class RecordSnapshot(
+    val available: Boolean,
+    val total: Int,
+    val entries: List<BlockRecordStore.Entry>,
+) {
+    companion object {
+        val UNAVAILABLE = RecordSnapshot(false, 0, emptyList())
     }
 }
 
@@ -115,7 +202,11 @@ private data class ModuleStatus(
 }
 
 @Composable
-private fun SettingsScreen(status: ModuleStatus) {
+private fun SettingsScreen(
+    status: ModuleStatus,
+    records: RecordSnapshot,
+    onClearRecords: () -> Unit,
+) {
     val scrollBehavior = MiuixScrollBehavior()
 
     Scaffold(
@@ -158,6 +249,66 @@ private fun SettingsScreen(status: ModuleStatus) {
                         R.string.status_scope_missing, SCOPE_PACKAGE
                     ),
                 )
+            }
+
+            Spacer(Modifier.height(8.dp))
+
+            SmallTitle(stringResource(R.string.section_records))
+            Card(modifier = Modifier.padding(horizontal = 12.dp)) {
+                if (!records.available) {
+                    Text(
+                        text = stringResource(R.string.records_unavailable),
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        modifier = Modifier.padding(16.dp),
+                    )
+                } else if (records.total == 0) {
+                    Text(
+                        text = stringResource(R.string.records_empty),
+                        style = MiuixTheme.textStyles.body2,
+                        modifier = Modifier.padding(start = 16.dp, top = 16.dp),
+                    )
+                    Text(
+                        text = stringResource(R.string.records_empty_hint),
+                        style = MiuixTheme.textStyles.footnote1,
+                        color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                        modifier = Modifier.padding(start = 16.dp, top = 4.dp, end = 16.dp, bottom = 16.dp),
+                    )
+                } else {
+                    BasicComponent(
+                        title = stringResource(R.string.records_total),
+                        summary = stringResource(R.string.records_count, records.total),
+                    )
+
+                    if (records.entries.isNotEmpty()) {
+                        HorizontalDivider(modifier = Modifier.padding(start = 16.dp))
+                        Text(
+                            text = stringResource(R.string.records_recent),
+                            style = MiuixTheme.textStyles.footnote1,
+                            color = MiuixTheme.colorScheme.onSurfaceVariantSummary,
+                            modifier = Modifier.padding(start = 16.dp, top = 12.dp, bottom = 4.dp),
+                        )
+
+                        val formatter = remember {
+                            SimpleDateFormat(RECORDS_TIME_PATTERN, Locale.getDefault())
+                        }
+
+                        records.entries.forEach { entry ->
+                            HorizontalDivider(modifier = Modifier.padding(start = 16.dp))
+                            BasicComponent(
+                                title = recordTypeLabel(entry.type),
+                                summary = formatter.format(Date(entry.timestamp)),
+                            )
+                        }
+                    }
+
+                    HorizontalDivider(modifier = Modifier.padding(start = 16.dp))
+                    TextButton(
+                        text = stringResource(R.string.records_clear),
+                        onClick = onClearRecords,
+                        modifier = Modifier.padding(start = 8.dp, top = 4.dp, bottom = 4.dp),
+                    )
+                }
             }
 
             Spacer(Modifier.height(8.dp))
@@ -271,6 +422,13 @@ private const val CHECK_CIRCLE_OUTLINE_PATH =
         "l2.59 2.59c.39.39 1.02.39 1.41 0L17.3 9.7c.39-.39.39-1.02 0-1.41-.39-.39-1.03-.39-1.42 0z"
 
 @Composable
+private fun recordTypeLabel(type: String): String = when (type) {
+    BlockRecordStore.TYPE_EGRESS -> stringResource(R.string.records_egress)
+    BlockRecordStore.TYPE_COLLECTOR -> stringResource(R.string.records_collector)
+    else -> type
+}
+
+@Composable
 private fun frameworkSummary(status: ModuleStatus): String {
     val name = status.frameworkName
     if (name.isNullOrEmpty()) {
@@ -295,3 +453,5 @@ private val ActivationAccent = Color(0xFF36D167)
 private val ActivationText = Color(0xFF101010)
 
 private const val SCOPE_PACKAGE = "com.miui.guardprovider"
+
+private const val RECORDS_TIME_PATTERN = "yyyy-MM-dd HH:mm:ss"
