@@ -28,13 +28,8 @@
 -dontwarn io.github.libxposed.**
 
 # ---------------------------------------------------------------------------
-# 2. ContentProvider
+# 2. Notes on non-kept classes
 # ---------------------------------------------------------------------------
-# BlockRecordProvider is instantiated by the framework from the manifest when the
-# Hook side calls it to deliver a block record, so its name and call must survive.
--keep class io.github.niguangowo.applistblocker.BlockRecordProvider { *; }
--keepnames class io.github.niguangowo.applistblocker.BlockRecordProvider
-
 # BlockRecordStore / ServiceBridge are intentionally NOT kept: they are only ever
 # reached by direct static references (no reflection, no manifest entry), so R8 may
 # inline and rename them freely. Keeping them would only bloat the APK.

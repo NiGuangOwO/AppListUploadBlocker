@@ -11,7 +11,6 @@
     <string name="activation_hint_scope">请在 LSPosed 中勾选作用域 %1$s</string>
 
     <string name="section_status">运行状态</string>
-    <string name="section_records">拦截记录</string>
     <string name="section_about">关于</string>
     <string name="status_channel">配置通道</string>
     <string name="status_channel_ok">已连接 LSPosed</string>
@@ -24,14 +23,4 @@
     <string name="about_build_time">构建时间</string>
     <string name="about_detail">拦截目标</string>
     <string name="about_license">本模块以 AGPL-3.0 许可发布，仅供学习与研究使用。</string>
-
-    <string name="records_empty">暂无拦截记录</string>
-    <string name="records_empty_hint">当模块成功拦截一次上报后会在此显示。</string>
-    <string name="records_count">已记录 %1$d 次拦截</string>
-    <string name="records_egress">外发出口拦截</string>
-    <string name="records_collector">采集源头拦截</string>
-    <string name="records_total">累计拦截次数</string>
-    <string name="records_recent">最近拦截</string>
-    <string name="records_clear">清空记录</string>
-    <string name="records_unavailable">记录不可用（本地存储读取失败）</string>
 </resources>

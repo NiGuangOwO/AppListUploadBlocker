@@ -27,24 +27,6 @@
             </intent-filter>
         </activity>
 
-        <!--
-          Hook 运行在目标进程内，无法写入本模块进程的 SharedPreferences（框架 remote
-          preferences 在 Hook 侧是只读实现），因此改由 Hook 调用本 Provider、在模块进程内落库。
-
-          通道选择 ContentProvider 而非广播：HyperOS 的 Greezer 会冻结 cached 状态的模块进程，
-          广播会被静默丢弃；Provider 的获取不受该门控限制，且能把已被 force-stop 的模块进程
-          拉起（实机验证过）。
-
-          这里必须 exported="true" 且不能声明 android:permission：调用方是目标应用进程
-          （com.miui.guardprovider），它不可能持有本模块声明的权限，一旦声明权限系统会直接
-          拒绝调用，记录将全部丢失。方法名校验在 BlockRecordProvider 内完成。
-        -->
-        <provider
-            android:name=".BlockRecordProvider"
-            android:authorities="io.github.niguangowo.applistblocker.records"
-            android:exported="true"
-            android:enabled="true" />
-
     </application>
 
 </manifest>

@@ -53,32 +53,12 @@ Content-Type: application/json
 
 激活状态由 `XposedServiceHelper` 回调推出：能收到 `onServiceBind` 即模块已启用，再用 `getScope()` 判断作用域是否包含 `com.miui.guardprovider`；两者皆满足才显示「已激活」。
 
-## 拦截记录
+## 拦截日志
 
-两个 Hook 每次真正拦下调用时都会落一条记录，设置页「拦截记录」区域展示累计次数与最近 50 条明细（时间 + 拦截点类型），并可一键清空。
+模块不落库、不做本地记录：每次真正拦下调用时，Hook 侧只通过 libxposed 的 `log()` 输出到 **LSPosed 管理器日志**（标签 `AppListBlocker`），可在 LSPosed → 日志中按该标签过滤查看。
 
-跨进程通道用的是 **ContentProvider**：Hook 侧（运行在 `com.miui.guardprovider` 进程内）通过 `ContentResolver.call()` 调用本模块的 `BlockRecordProvider`（`content://io.github.niguangowo.applistblocker.records`，方法名 `record`，参数放在 `Bundle` 里），Provider 在模块进程内写入本进程私有的 SharedPreferences，设置页直接读同一个文件。
-
-之所以不用 libxposed 的 remote preferences：框架在 Hook 侧返回的是**只读实现**（`LSPosedRemotePreferences.edit()` 抛 `UnsupportedOperationException`），Hook 进程无法写入；而且该实现在 Hook 侧只保存一份快照，只有框架主动推送时才刷新，不适合做写入通道。
-
-之所以也不用广播：HyperOS 的 Greezer 会把处于 cached 状态的模块进程冻结，投递到该进程的广播会被 `Greezer Denial: ... need cached broadcast` 静默丢弃；若进程已被 force-stop，则被 `BroadcastQueueInjector` 以 `process is not permitted to auto start` 拒绝。**ContentProvider 的获取不受这两处门控限制**——即使模块进程已被 force-stop，一次 `call` 也能把它拉起（实机验证：`am force-stop` 后进程为空，`content call` 返回 `Bundle[{ok=true}]` 且进程出现）。
-
-`BlockRecordProvider` 声明为 `exported="true"` 且**不声明自定义权限**：调用方是目标应用进程（`com.miui.guardprovider`），它不可能持有本模块声明的权限，一旦声明权限系统会直接拒绝调用、记录全部丢失。
-
-由于没有权限门槛，任何应用都可以直接 `call` 这个 Provider 伪造记录。**拦截记录仅用于本机展示，不作为安全审计依据。**
-
-时间戳来自不可信的调用方，Provider 会把超出「当前时刻 + 60 秒」或非正数的值夹取为当前时刻：既不误伤投递延迟，也避免 `Long.MAX_VALUE` 编出 19 位字符串破坏定宽排序、挤掉真实记录。
-
-存储结构（`BlockRecordStore`）：
-
-| 键 | 内容 |
-| --- | --- |
-| `total_count` | 累计拦截次数，只增不减，清空时一并重置 |
-| `entries` | 最近 50 条记录，每项编码为 `<13 位毫秒时间戳>\|<类型>\|<序号>`，定宽时间戳保证字典序与时间序一致，序号区分同一毫秒内的同类型拦截 |
-
-类型取值为 `EGRESS`（外发出口拦截）与 `COLLECTOR`（采集源头拦截）。
-
-记录功能属于附带能力：`BlockRecordStore` 的读写全部捕获异常，失败时只打一条 `WARN` 日志，**任何记录失败都不会影响拦截本身**。Hook 侧的投递队列有界（64 条），队列满时丢弃记录并打日志，不会反过来拖慢目标应用。
+- 外发出口被拦：`Blocked app list upload to https://flash.sec.miui.com/detect/app`
+- 采集源头被拦：`Blocked app list collection`
 
 ## 构建
 
